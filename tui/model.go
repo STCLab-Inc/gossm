@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"path"
 	"strings"
 	"time"
@@ -110,7 +111,7 @@ func NewExplorerModel(cfg aws.Config, instanceId, localDir, remoteDir, s3Bucket 
 		s3Bucket:      s3Bucket,
 		s3Prefix:      s3Prefix,
 		buttons:       buttons,
-		panelContentY: 2,
+		panelContentY: 3, // border(1) + navBar(1) + gap(1)
 		cache:         newDirCache(60 * time.Second), // 60s TTL
 	}
 }
@@ -202,6 +203,11 @@ func (m ExplorerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.transfering {
 			return m, nil
 		}
+		// Route to input handler if panel is in edit/filter mode
+		p := m.activeP()
+		if p.Mode != ModeNormal {
+			return m.handleInputKey(msg)
+		}
 		return m.handleKey(msg)
 	}
 
@@ -238,13 +244,31 @@ func (m ExplorerModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// Determine which panel was clicked
 		panelWidth := m.width / 2
 		clickedPanel := 0
+		localX := x
 		if x >= panelWidth {
 			clickedPanel = 1
+			localX = x - panelWidth
 		}
 
 		// Switch active panel
 		m.activePanel = clickedPanel
 		p := m.activeP()
+
+		// Check if click is on navigation bar (y == 1, inside border)
+		if y == 1 {
+			// Adjust localX for border (1 char)
+			lx := localX - 1
+			if lx >= p.BackBtnX1 && lx < p.BackBtnX2 {
+				return m.navBack()
+			}
+			if lx >= p.FwdBtnX1 && lx < p.FwdBtnX2 {
+				return m.navForward()
+			}
+			if lx >= p.PathBarX1 && lx < p.PathBarX2 {
+				p.StartPathEdit()
+				return m, nil
+			}
+		}
 
 		// Calculate which entry was clicked
 		entryY := y - m.panelContentY
@@ -405,12 +429,97 @@ func (m ExplorerModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case "/":
+		// Enter filter mode
+		m.activeP().StartFilter()
+		return m, nil
+
+	case "ctrl+l":
+		// Enter path edit mode
+		m.activeP().StartPathEdit()
+		return m, nil
+
+	case "alt+left", "backspace":
+		// Go back in history
+		return m.navBack()
+
+	case "alt+right":
+		// Go forward in history
+		return m.navForward()
+
+	case "~":
+		// Go to home directory
+		return m.goHome()
+
+	case "-":
+		// Go back (ranger style)
+		return m.navBack()
+
 	case "?":
-		m.statusMsg = helpBarStyle.Render("Tab:switch | Arrows:move | Enter:open | Space/RightClick:select | c:copy | a:all | r:refresh | q:quit | Mouse:click/scroll/double-click")
+		m.statusMsg = helpBarStyle.Render("Ctrl+L:path | /:filter | Alt+←:back | Alt+→:fwd | ~:home | Tab | Enter | Space | c:copy | r:refresh | q:quit")
 		return m, nil
 	}
 
 	return m, nil
+}
+
+// handleInputKey handles key events when in path edit or filter mode.
+func (m ExplorerModel) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	p := m.activeP()
+	key := msg.String()
+
+	switch key {
+	case "escape":
+		p.CancelInput()
+		return m, nil
+
+	case "enter":
+		if p.Mode == ModePathEdit {
+			newPath := p.ConfirmPathEdit()
+			if newPath == "" {
+				return m, nil
+			}
+			return m.navigateToPath(newPath)
+		}
+		if p.Mode == ModeFilter {
+			// Confirm filter and switch to normal mode (keep filter active)
+			p.Mode = ModeNormal
+			return m, nil
+		}
+		return m, nil
+
+	case "backspace":
+		if len(p.InputText) > 0 {
+			p.InputText = p.InputText[:len(p.InputText)-1]
+			if p.Mode == ModeFilter {
+				p.UpdateFilter()
+			}
+		}
+		return m, nil
+
+	case "ctrl+u":
+		// Clear input
+		p.InputText = ""
+		if p.Mode == ModeFilter {
+			p.UpdateFilter()
+		}
+		return m, nil
+
+	default:
+		// Append character
+		if len(key) == 1 && key[0] >= 32 {
+			p.InputText += key
+			if p.Mode == ModeFilter {
+				p.UpdateFilter()
+			}
+		} else if key == "space" {
+			p.InputText += " "
+			if p.Mode == ModeFilter {
+				p.UpdateFilter()
+			}
+		}
+		return m, nil
+	}
 }
 
 func (m *ExplorerModel) activeP() *Panel {
@@ -420,24 +529,82 @@ func (m *ExplorerModel) activeP() *Panel {
 	return &m.remotePanel
 }
 
-func (m ExplorerModel) enterDir() (tea.Model, tea.Cmd) {
+func (m ExplorerModel) navigateToPath(newPath string) (tea.Model, tea.Cmd) {
 	p := m.activeP()
-	newPath, changed := p.EnterDir()
-	if !changed {
-		return m, nil
-	}
+	p.NavigateTo(newPath)
 
 	if p.IsRemote {
-		m.remotePanel.Path = newPath
 		m.remotePanel.Loading = true
 		m.remotePanel.Entries = nil
 		m.statusMsg = loadingStyle.Render(fmt.Sprintf("Loading %s...", newPath))
 		return m, m.fetchRemoteDir(newPath)
 	}
 
-	m.localPanel.Path = newPath
 	m.localPanel.LoadLocal()
 	return m, nil
+}
+
+func (m ExplorerModel) navBack() (tea.Model, tea.Cmd) {
+	p := m.activeP()
+	prevPath, ok := p.GoBack()
+	if !ok {
+		return m, nil
+	}
+
+	if p.IsRemote {
+		m.remotePanel.Loading = true
+		return m, m.fetchRemoteDir(prevPath)
+	}
+	m.localPanel.LoadLocal()
+	return m, nil
+}
+
+func (m ExplorerModel) navForward() (tea.Model, tea.Cmd) {
+	p := m.activeP()
+	nextPath, ok := p.GoForward()
+	if !ok {
+		return m, nil
+	}
+
+	if p.IsRemote {
+		m.remotePanel.Loading = true
+		return m, m.fetchRemoteDir(nextPath)
+	}
+	m.localPanel.LoadLocal()
+	return m, nil
+}
+
+func (m ExplorerModel) goHome() (tea.Model, tea.Cmd) {
+	p := m.activeP()
+	var homePath string
+	if p.IsRemote {
+		// Use detectRemoteHome pattern
+		return m, func() tea.Msg {
+			output, err := RunRemoteCommand(m.awsConfig, m.instanceId, "echo $HOME")
+			if err == nil {
+				home := strings.TrimSpace(output)
+				if home != "" {
+					return remoteHomeMsg{home: home}
+				}
+			}
+			return remoteHomeMsg{home: "/tmp"}
+		}
+	}
+
+	homePath, _ = os.UserHomeDir()
+	if homePath == "" {
+		homePath = "/"
+	}
+	return m.navigateToPath(homePath)
+}
+
+func (m ExplorerModel) enterDir() (tea.Model, tea.Cmd) {
+	p := m.activeP()
+	newPath, changed := p.EnterDir()
+	if !changed {
+		return m, nil
+	}
+	return m.navigateToPath(newPath)
 }
 
 func (m ExplorerModel) copyFilesFromPanel(fromPanel int) (tea.Model, tea.Cmd) {

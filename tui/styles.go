@@ -47,4 +47,12 @@ var (
 
 	loadingStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("214")) // orange
+
+	pathEditStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("235")).
+			Foreground(lipgloss.Color("255"))
+
+	filterStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
+			Bold(true)
 )
