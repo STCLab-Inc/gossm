@@ -1,19 +1,18 @@
-# gossm (STCLab Fork)
+# gossm
 
 Interactive CLI tool for AWS EC2 instances via Systems Manager Session Manager.
 Connect, transfer files, and browse remote servers — **no SSH keys required** for file transfer.
 
 > Forked from [gjbae1212/gossm](https://github.com/gjbae1212/gossm) (archived)
 
-## What's New (STCLab Fork)
+## Features
 
-- **`gossm start --bucket`** — Terminal + file explorer split view (no SSH keys needed)
-- **`gossm scp`** — Interactive mode (server selection, direction picker, path input)
+- **Terminal + File Explorer split view** — `gossm start --bucket` (no SSH keys needed)
+- **Interactive SCP** — Server selection, direction picker, path input
 - **Editable path bar** — Click or Ctrl+L to type paths directly
 - **Back/Forward navigation** — ◀ ▶ buttons + Alt+Arrow keys
 - **File filtering** — Press `/` to filter files in current directory
 - **Connection history** — Recent servers shown with ★ at top
-- **S3 temp file cleanup** — Signal handler + auto-purge stale files
 - **Mouse support** — Click, scroll, double-click, right-click to select
 
 ## Prerequisite
