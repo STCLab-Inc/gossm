@@ -33,13 +33,19 @@ Connect, transfer files, and browse remote servers — **no SSH keys required** 
 
 ## Install
 
-```bash
-# Build from source
-git clone https://github.com/STCLab-Inc/gossm.git
-cd gossm && git checkout develop
-go build -o gossm .
+### Homebrew (macOS / Linux)
 
-# Move to PATH
+```bash
+brew tap STCLab-Inc/gossm
+brew install gossm
+```
+
+### Build from source
+
+```bash
+git clone https://github.com/STCLab-Inc/gossm.git
+cd gossm
+go build -o gossm .
 mv gossm /usr/local/bin/
 ```
 
