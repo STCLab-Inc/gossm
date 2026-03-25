@@ -544,6 +544,45 @@ func GenerateSSHExecCommand(exec, identity, user, domain string) (newExec string
 	return
 }
 
+// AskDirection asks you which selects upload or download.
+func AskDirection() (string, error) {
+	options := []string{
+		"Upload   (Local → Remote)",
+		"Download (Remote → Local)",
+	}
+	prompt := &survey.Select{
+		Message: "Transfer direction:",
+		Options: options,
+	}
+	var selected string
+	if err := survey.AskOne(prompt, &selected, survey.WithIcons(func(icons *survey.IconSet) {
+		icons.SelectFocus.Format = "green+hb"
+	})); err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(selected, "Upload") {
+		return "upload", nil
+	}
+	return "download", nil
+}
+
+// AskPath asks for a file path with a message and default value.
+func AskPath(message, defaultVal string) (string, error) {
+	prompt := &survey.Input{
+		Message: message,
+		Default: defaultVal,
+	}
+	var path string
+	if err := survey.AskOne(prompt, &path); err != nil {
+		return "", err
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("path cannot be empty")
+	}
+	return path, nil
+}
+
 func PrintReady(cmd, region, target string) {
 	fmt.Printf("[%s] region: %s, target: %s\n", color.GreenString(cmd), color.YellowString(region), color.YellowString(target))
 }
