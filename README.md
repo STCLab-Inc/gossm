@@ -1,13 +1,36 @@
 # gossm
 
 Interactive CLI tool for AWS EC2 instances via Systems Manager Session Manager.
-Connect, transfer files, and browse remote servers — **no SSH keys required** for file transfer.
 
 > Forked from [gjbae1212/gossm](https://github.com/gjbae1212/gossm) (archived)
 
+## Highlights
+
+### `gossm start --bucket my-s3-bucket`
+
+**SSH 키 없이** S3를 경유하여 EC2 파일 업로드/다운로드가 가능합니다.
+터미널과 파일 탐색기가 한 화면에 동시에 표시됩니다.
+
+```
+┌──────────────────────────────┬────────────────────────┐
+│                              │ ◀ ▶ /home/ec2-user     │
+│   SSM Terminal (65%)         │ 📁 app/                 │
+│   $ ls /app                  │ 📁 logs/                │
+│   main.go  config.yaml      │ 📄 config.yaml     824B │
+│   $ _                        │ 📄 data.csv        12M  │
+│                              │                        │
+│                              │ [Upload] [Download]    │
+└──────────────────────────────┴────────────────────────┘
+```
+
+- **SSM SendCommand**로 리모트 파일 탐색 (SSH 키 불필요)
+- **S3 버킷**을 중간 스테이징으로 사용하여 파일 전송
+- **마우스 클릭/스크롤/더블클릭** 지원
+- **경로 바 직접 편집**, ◀ ▶ 뒤로/앞으로 네비게이션
+
 ## Features
 
-- **Terminal + File Explorer split view** — `gossm start --bucket` (no SSH keys needed)
+- **Terminal + File Explorer split view** — `gossm start --bucket`
 - **Interactive SCP** — Server selection, direction picker, path input
 - **Editable path bar** — Click or Ctrl+L to type paths directly
 - **Back/Forward navigation** — ◀ ▶ buttons + Alt+Arrow keys
@@ -63,21 +86,7 @@ gossm start --bucket my-s3-bucket
 gossm start -t i-0abc123 --bucket my-s3-bucket
 ```
 
-With `--bucket`, a tmux split view opens automatically:
-
-```
-┌──────────────────────────────┬────────────────────────┐
-│                              │ ◀ ▶ /home/ec2-user     │
-│   SSM Terminal (65%)         │ 📁 app/                 │
-│   $ ls /app                  │ 📁 logs/                │
-│   main.go  config.yaml      │ 📄 config.yaml     824B │
-│   $ _                        │ 📄 data.csv        12M  │
-│                              │                        │
-│                              │ [Upload] [Download]    │
-└──────────────────────────────┴────────────────────────┘
-```
-
-**File Explorer keyboard shortcuts:**
+**File Explorer keyboard shortcuts (right pane):**
 
 | Key | Action |
 |-----|--------|
