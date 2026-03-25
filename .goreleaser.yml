@@ -1,0 +1,51 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - binary: gossm
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.gossmVersion={{ .Version }}
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: STCLab-Inc
+    name: gossm
+
+brews:
+  - name: gossm
+    repository:
+      owner: STCLab-Inc
+      name: homebrew-gossm
+    commit_author:
+      name: STCLab-Inc
+      email: dev@stclab.com
+    homepage: "https://github.com/STCLab-Inc/gossm"
+    description: "Interactive AWS SSM CLI with terminal + file explorer split view"
+    license: "MIT"
+    dependencies:
+      - name: tmux
+        type: optional
