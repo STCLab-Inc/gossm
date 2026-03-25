@@ -1,136 +1,156 @@
-# gossm
+# gossm (STCLab Fork)
 
-`gossm` is interactive CLI tool that you should select server in AWS and then could connect or send files your AWS server using start-session, ssh, scp under AWS Systems Manger Session Manager.
-<p align="center">
-<img src="https://storage.googleapis.com/gjbae1212-asset/gossm/start.gif" width="500", height="450" />
-</p>
+Interactive CLI tool for AWS EC2 instances via Systems Manager Session Manager.
+Connect, transfer files, and browse remote servers — **no SSH keys required** for the explorer.
 
-<p align="center"/>
-<a href="https://circleci.com/gh/gjbae1212/gossm"><img src="https://circleci.com/gh/gjbae1212/gossm.svg?style=svg"></a>
-<a href="https://hits.seeyoufarm.com"/><img src="https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2Fgjbae1212%2Fgossm"/></a>
-<a href="/LICENSE"><img src="https://img.shields.io/badge/license-MIT-GREEN.svg" alt="license" /></a>
-<a href="https://goreportcard.com/report/github.com/gjbae1212/gossm"><img src="https://goreportcard.com/badge/github.com/gjbae1212/gossm" alt="Go Report Card"/></a>
-</p>
+> Forked from [gjbae1212/gossm](https://github.com/gjbae1212/gossm) (archived)
 
-## Overview
-`gossm` is interactive CLI tool that is related AWS Systems Manger Session Manager.
-It can select a ec2 server installed aws-ssm-agent and then can connect its server using start-session, ssh.
-As well as files can send using scp.  
-If you will use `gossm` tool, this mean there will no need to open inbound 22 port in your ec2 server when is using ssh or scp command.  
-Because AWS Systems Manger Session Manager is using ssh protocol tunneling.   
-<br/>
-**Additionally Features**
-- `mfa` command has added. this command is to authenticate through AWS MFA, and then to save issued a temporary credentials in $HOME/.aws/credentials_mfa. (default expired time is after 6 hours)  
-You should export global environment, such as `export AWS_SHARED_CREDENTIALS_FILE=$HOME/.aws/credentials_mfa`.    
-With completed, you can execute AWS CLI and gossm conveniently without mfa authenticated.    
-Refer to detail information below.
-   
+## What's New (STCLab Fork)
+
+- **`gossm explorer`** — Dual-pane file manager with mouse support (SSM + S3, no SSH keys)
+- **`gossm start --bucket`** — Terminal + file explorer split view (tmux)
+- **`gossm scp`** — Interactive mode (server selection, direction picker, path input)
+- **Editable path bar** — Click or Ctrl+L to type paths directly
+- **Back/Forward navigation** — ◀ ▶ buttons + Alt+Arrow keys
+- **File filtering** — Press `/` to filter files in current directory
+- **Connection history** — Recent servers shown with ★ at top
+- **S3 temp file cleanup** — Signal handler + auto-purge stale files
+- **Mouse support** — Click, scroll, double-click, right-click to select
+
 ## Prerequisite
-### ec2
-- [required] Your ec2 servers in aws are installed [aws ssm agent](https://docs.aws.amazon.com/systems-manager/latest/userguide/ssm-agent.html). 
-- [required] ec2 severs have to attach **AmazonSSMManagedInstanceCore** iam policy.
-- If you would like to use ssh, scp command using gossm, aws ssm agent version **2.3.672.0 or later** is installed on ec2.
 
-### user
-- [required] your **aws access key**, **aws secret key**
-- [required] **ec2:DescribeInstances**, **ssm:StartSession**, **ssm:TerminateSession**, **ssm:DescribeSessions**, **ssm:DescribeInstanceInformation**, **ssm:DescribeInstanceProperties**, **ssm:GetConnectionStatus** 
-- [optional] It's better to possibly get to additional permission for **ec2:DescribeRegions**
+### EC2 Instance
+- [required] [AWS SSM Agent](https://docs.aws.amazon.com/systems-manager/latest/userguide/ssm-agent.html) installed
+- [required] **AmazonSSMManagedInstanceCore** IAM policy attached
+- [optional] For `ssh`/`scp` commands: SSM Agent **v2.3.672.0+**
+- [optional] For `explorer`: IAM role with **S3 read/write** access
+
+### Local Machine
+- [required] AWS credentials (`aws_access_key_id`, `aws_secret_access_key`)
+- [required] IAM permissions: `ec2:DescribeInstances`, `ssm:StartSession`, `ssm:TerminateSession`, `ssm:DescribeInstanceInformation`, `ssm:SendCommand`, `ssm:GetCommandInvocation`
+- [optional] `ec2:DescribeRegions` for region selection
+- [optional] `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject` for explorer file transfer
+- [optional] `tmux` for split view (`gossm start --bucket`)
 
 ## Install
-### Homebrew
-```
-# install
-$ brew tap gjbae1212/gossm
-$ brew install gossm
-
-# upgrade
-$ brew upgrade gossm
-```
-
-### Download
-[download](https://github.com/gjbae1212/gossm/releases)
-
-## How to use
-### global command args
-| args           | Description                                               | Default                |
-| ---------------|-----------------------------------------------------------|------------------------|
-| -c             | (optional) aws credentials file | $HOME/.aws/credentials |
-| -p             | (optional) if you are having multiple aws profiles in credentials, it is name one of profiles | default |
-| -r             | (optional) region in AWS that would like to connect |  |
-
-If your machine don't exist $HOME/.aws/.credentials, have to pass `-c` args.  
-```
-# credentials file format
-[default]
-aws_access_key_id = AWS ACCESS KEY
-aws_secret_access_key = AWS SECRET KEY
-``` 
-  
-`-r` or `-t` don't pass args, it can select through interactive CLI.  
-    
-### command
-#### start
-```bash
-$ gossm start 
-```
-
-#### ssh, scp
-`-e` must pass args when is using scp.   
-`-e` args is command and args when usually used to pass ssh or scp.
-```bash
-# ssh(if pem is already registered using ssh-add)
-$ gossm ssh -e 'user@server-domain'
-
-# ssh(if pem isn't registered)
-$ gossm ssh -e '-i key.pem user@server-domain'
-
-# ssh(if pem is already registered using ssh-add and don't pass -e option) -> select server using interactive cli
-$ gossm ssh
-
-# ssh(if pem isn't registered and don't pass -e option) -> select server using interactive cli
-$ gossm ssh -i key.pem
- 
-# scp(if pem is already registered using ssh-add)
-$ gossm scp -e 'file user@server-domain:/home/blahblah'
-
-# scp(if pem isn't registered)
-$ gossm scp -e '-i key.pem file user@server-domain:/home/blahblah'
-
-```
-**ex)**  
-<p align="center">
-<img src="https://storage.googleapis.com/gjbae1212-asset/gossm/ssh.gif" width="500", height="450" />
-</p>
-
-#### cmd 
-`-e` required args, it is a parameter for execute to command on selected servers.
 
 ```bash
-# It is to execute a command("uptime") on selected multiple servers, waiting for a response on its result.
-$ gossm cmd -e "uptime" 
+# Build from source
+git clone https://github.com/STCLab-Inc/gossm.git
+cd gossm
+go build -o gossm .
+
+# Move to PATH
+mv gossm /usr/local/bin/
 ```
 
-#### fwd
-`-z` Optionally specify the remote port to access
-`-l` Optionally specify the local port to forward (If not specified when using `-z`, then this value defaults to the value of `-z`)
+## Commands
+
+### start — SSM Session
 
 ```bash
-$ gossm fwd -z 8080 -l 42069
-```
-If not specified, you will be prompted to enter a remote and local port after selecting a target. 
+# Normal terminal session
+gossm start
 
-#### mfa
-`-deadline` it's to set expire time for temporary credentials. **default** is 6 hours.  
-`-device` it's to set mfa device. **default** is your virtual mfa device.
+# Terminal + File Explorer split view (tmux required)
+gossm start --bucket my-s3-bucket
+
+# Direct target (skip selection)
+gossm start -t i-0abc123
+```
+
+### explorer — Dual-Pane File Manager
+
+No SSH keys required. Uses SSM SendCommand for browsing + S3 for file transfer.
+
 ```bash
-$ gossm mfa <your-mfa-code>
+gossm explorer --bucket my-s3-bucket
+gossm explorer --bucket my-s3-bucket --remote-path /var/log
+gossm explorer --bucket my-s3-bucket -t i-0abc123
 ```
-**Must set to `export AWS_SHARED_CREDENTIALS_FILE=$HOME/.aws/credentials_mfa` in .bash_profile, .zshrc.**
 
-**ex)**  
-<p align="center">
-<img src="https://storage.googleapis.com/gjbae1212-asset/gossm/mfa.png" />
-</p>
- 
-## LICENSE
-This project is following The MIT.
+**Keyboard shortcuts:**
+
+| Key | Action |
+|-----|--------|
+| `Tab` | Switch panel (Local ↔ Remote) |
+| `↑↓` / `jk` | Navigate files |
+| `Enter` | Open directory |
+| `Space` | Select/deselect file |
+| `a` | Select all / deselect all |
+| `c` | Copy selected files to other panel |
+| `Ctrl+L` | Edit path bar (type path directly) |
+| `/` | Filter files in current directory |
+| `~` | Go to home directory |
+| `Alt+←` / `-` | Go back |
+| `Alt+→` | Go forward |
+| `r` / `F5` | Refresh |
+| `q` | Quit |
+
+**Mouse:**
+
+| Action | Effect |
+|--------|--------|
+| Click | Select file / switch panel |
+| Double-click | Open directory |
+| Right-click | Toggle file selection |
+| Scroll wheel | Navigate (3 lines) |
+| Click `◀` `▶` | Back / Forward |
+| Click path bar | Edit path |
+| Click `[Upload]` `[Download]` | Transfer files |
+
+### scp — Interactive File Copy
+
+```bash
+# Interactive mode (recommended)
+gossm scp
+gossm scp -i ~/.ssh/id_rsa
+
+# Legacy mode
+gossm scp -e '-i key.pem file user@server:/path'
+```
+
+### ssh — SSH Session
+
+```bash
+gossm ssh                          # interactive server selection
+gossm ssh -i ~/.ssh/id_rsa        # with identity file
+gossm ssh -e 'user@server'        # direct connection
+```
+
+### cmd — Run Command on Multiple Servers
+
+```bash
+gossm cmd -e "uptime"
+gossm cmd -e "df -h" -t i-0abc123
+```
+
+### fwd — Port Forwarding
+
+```bash
+gossm fwd -z 8080 -l 42069
+```
+
+### mfa — MFA Authentication
+
+```bash
+gossm mfa <your-mfa-code>
+```
+
+## Global Flags
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-p` | AWS profile name | `default` / `$AWS_PROFILE` |
+| `-r` | AWS region | interactive selection |
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `AWS_PROFILE` | Default AWS profile |
+| `GOSSM_S3_BUCKET` | Default S3 bucket for explorer |
+
+## License
+
+MIT — see [LICENSE](LICENSE)
