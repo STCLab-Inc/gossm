@@ -90,5 +90,6 @@ func init() {
 	viper.BindPFlag("explorer-target", explorerCommand.Flags().Lookup("target"))
 	viper.BindPFlag("explorer-remote-path", explorerCommand.Flags().Lookup("remote-path"))
 
+	explorerCommand.Hidden = true // internal command, used by "start --bucket" via tmux
 	rootCmd.AddCommand(explorerCommand)
 }

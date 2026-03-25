@@ -1,14 +1,13 @@
 # gossm (STCLab Fork)
 
 Interactive CLI tool for AWS EC2 instances via Systems Manager Session Manager.
-Connect, transfer files, and browse remote servers — **no SSH keys required** for the explorer.
+Connect, transfer files, and browse remote servers — **no SSH keys required** for file transfer.
 
 > Forked from [gjbae1212/gossm](https://github.com/gjbae1212/gossm) (archived)
 
 ## What's New (STCLab Fork)
 
-- **`gossm explorer`** — Dual-pane file manager with mouse support (SSM + S3, no SSH keys)
-- **`gossm start --bucket`** — Terminal + file explorer split view (tmux)
+- **`gossm start --bucket`** — Terminal + file explorer split view (no SSH keys needed)
 - **`gossm scp`** — Interactive mode (server selection, direction picker, path input)
 - **Editable path bar** — Click or Ctrl+L to type paths directly
 - **Back/Forward navigation** — ◀ ▶ buttons + Alt+Arrow keys
@@ -23,13 +22,13 @@ Connect, transfer files, and browse remote servers — **no SSH keys required** 
 - [required] [AWS SSM Agent](https://docs.aws.amazon.com/systems-manager/latest/userguide/ssm-agent.html) installed
 - [required] **AmazonSSMManagedInstanceCore** IAM policy attached
 - [optional] For `ssh`/`scp` commands: SSM Agent **v2.3.672.0+**
-- [optional] For `explorer`: IAM role with **S3 read/write** access
+- [optional] For file transfer (`--bucket`): IAM role with **S3 read/write** access
 
 ### Local Machine
 - [required] AWS credentials (`aws_access_key_id`, `aws_secret_access_key`)
 - [required] IAM permissions: `ec2:DescribeInstances`, `ssm:StartSession`, `ssm:TerminateSession`, `ssm:DescribeInstanceInformation`, `ssm:SendCommand`, `ssm:GetCommandInvocation`
 - [optional] `ec2:DescribeRegions` for region selection
-- [optional] `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject` for explorer file transfer
+- [optional] `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject` for file transfer
 - [optional] `tmux` for split view (`gossm start --bucket`)
 
 ## Install
@@ -37,7 +36,7 @@ Connect, transfer files, and browse remote servers — **no SSH keys required** 
 ```bash
 # Build from source
 git clone https://github.com/STCLab-Inc/gossm.git
-cd gossm
+cd gossm && git checkout develop
 go build -o gossm .
 
 # Move to PATH
@@ -46,30 +45,34 @@ mv gossm /usr/local/bin/
 
 ## Commands
 
-### start — SSM Session
+### start — SSM Session + File Explorer
 
 ```bash
 # Normal terminal session
 gossm start
 
-# Terminal + File Explorer split view (tmux required)
+# Terminal + File Explorer split view (recommended)
 gossm start --bucket my-s3-bucket
 
 # Direct target (skip selection)
-gossm start -t i-0abc123
+gossm start -t i-0abc123 --bucket my-s3-bucket
 ```
 
-### explorer — Dual-Pane File Manager
+With `--bucket`, a tmux split view opens automatically:
 
-No SSH keys required. Uses SSM SendCommand for browsing + S3 for file transfer.
-
-```bash
-gossm explorer --bucket my-s3-bucket
-gossm explorer --bucket my-s3-bucket --remote-path /var/log
-gossm explorer --bucket my-s3-bucket -t i-0abc123
+```
+┌──────────────────────────────┬────────────────────────┐
+│                              │ ◀ ▶ /home/ec2-user     │
+│   SSM Terminal (65%)         │ 📁 app/                 │
+│   $ ls /app                  │ 📁 logs/                │
+│   main.go  config.yaml      │ 📄 config.yaml     824B │
+│   $ _                        │ 📄 data.csv        12M  │
+│                              │                        │
+│                              │ [Upload] [Download]    │
+└──────────────────────────────┴────────────────────────┘
 ```
 
-**Keyboard shortcuts:**
+**File Explorer keyboard shortcuts:**
 
 | Key | Action |
 |-----|--------|
@@ -85,7 +88,7 @@ gossm explorer --bucket my-s3-bucket -t i-0abc123
 | `Alt+←` / `-` | Go back |
 | `Alt+→` | Go forward |
 | `r` / `F5` | Refresh |
-| `q` | Quit |
+| `q` | Quit explorer |
 
 **Mouse:**
 
@@ -149,7 +152,7 @@ gossm mfa <your-mfa-code>
 | Variable | Description |
 |----------|-------------|
 | `AWS_PROFILE` | Default AWS profile |
-| `GOSSM_S3_BUCKET` | Default S3 bucket for explorer |
+| `GOSSM_S3_BUCKET` | Default S3 bucket for file transfer |
 
 ## License
 
