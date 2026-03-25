@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,10 +16,35 @@ type remoteDirMsg struct {
 	entries []FileEntry
 	path    string
 }
-type remoteDirErrMsg struct{ err error }
+type remoteDirErrMsg struct {
+	err  error
+	path string
+}
+type remoteHomeMsg struct {
+	home string
+}
 
 type transferDoneMsg struct{ msg string }
 type transferErrMsg struct{ err error }
+
+// doubleClickMsg is sent after a delay to reset double-click detection
+type doubleClickResetMsg struct{}
+
+// Button IDs for the bottom action bar
+const (
+	btnUpload   = "upload"
+	btnDownload = "download"
+	btnRefresh  = "refresh"
+	btnQuit     = "quit"
+)
+
+// button represents a clickable button in the action bar
+type button struct {
+	id     string
+	label  string
+	style  lipgloss.Style
+	x1, x2 int // screen x positions (calculated during render)
+}
 
 // ExplorerModel is the main dual-pane file manager model.
 type ExplorerModel struct {
@@ -29,6 +55,18 @@ type ExplorerModel struct {
 	height      int
 	statusMsg   string
 	transfering bool
+
+	// Mouse state
+	lastClickTime time.Time
+	lastClickY    int
+	lastClickPanel int
+
+	// Action buttons
+	buttons []button
+
+	// Layout constants
+	panelContentY int // Y offset where file entries start in panels
+	actionBarY    int // Y position of the action bar
 
 	// AWS/SSM config
 	awsConfig  aws.Config
@@ -42,8 +80,17 @@ func NewExplorerModel(cfg aws.Config, instanceId, localDir, remoteDir, s3Bucket 
 	s3Prefix := fmt.Sprintf("gossm-tmp/%s", instanceId)
 
 	local := NewPanel("Local", localDir, false)
+	local.LoadLocal()
+
 	remote := NewPanel("Remote", remoteDir, true)
 	remote.Loading = true
+
+	buttons := []button{
+		{id: btnUpload, label: " Upload >>> ", style: lipgloss.NewStyle().Background(lipgloss.Color("28")).Foreground(lipgloss.Color("255")).Bold(true).Padding(0, 1)},
+		{id: btnDownload, label: " <<< Download ", style: lipgloss.NewStyle().Background(lipgloss.Color("33")).Foreground(lipgloss.Color("255")).Bold(true).Padding(0, 1)},
+		{id: btnRefresh, label: " Refresh ", style: lipgloss.NewStyle().Background(lipgloss.Color("240")).Foreground(lipgloss.Color("255")).Padding(0, 1)},
+		{id: btnQuit, label: " Quit ", style: lipgloss.NewStyle().Background(lipgloss.Color("124")).Foreground(lipgloss.Color("255")).Padding(0, 1)},
+	}
 
 	return ExplorerModel{
 		localPanel:  local,
@@ -53,13 +100,13 @@ func NewExplorerModel(cfg aws.Config, instanceId, localDir, remoteDir, s3Bucket 
 		instanceId:  instanceId,
 		s3Bucket:    s3Bucket,
 		s3Prefix:    s3Prefix,
+		buttons:     buttons,
+		panelContentY: 2, // border(1) + title(1)
 	}
 }
 
 func (m ExplorerModel) Init() tea.Cmd {
-	// Load local dir and fetch remote dir
-	m.localPanel.LoadLocal()
-	return m.fetchRemoteDir(m.remotePanel.Path)
+	return m.detectRemoteHome()
 }
 
 func (m ExplorerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -69,29 +116,45 @@ func (m ExplorerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		panelWidth := m.width / 2
-		panelHeight := m.height - 3 // room for help bar
+		panelHeight := m.height - 5 // panels + status + buttons + help
 		m.localPanel.Width = panelWidth
 		m.localPanel.Height = panelHeight
 		m.remotePanel.Width = m.width - panelWidth
 		m.remotePanel.Height = panelHeight
+		m.actionBarY = panelHeight + 1
 		return m, nil
+
+	case tea.MouseMsg:
+		if m.transfering {
+			return m, nil
+		}
+		return m.handleMouse(msg)
 
 	case remoteDirMsg:
 		m.remotePanel.Path = msg.path
 		m.remotePanel.SetRemoteEntries(msg.entries)
-		m.statusMsg = fmt.Sprintf("Remote: %s (%d items)", msg.path, len(msg.entries)-1)
+		m.statusMsg = successStyle.Render(fmt.Sprintf("Remote: %s (%d items)", msg.path, len(msg.entries)-1))
 		return m, nil
+
+	case remoteHomeMsg:
+		m.remotePanel.Path = msg.home
+		return m, m.fetchRemoteDir(msg.home)
 
 	case remoteDirErrMsg:
 		m.remotePanel.Loading = false
 		m.remotePanel.Err = msg.err
-		m.statusMsg = errorStyle.Render("Remote error: " + msg.err.Error())
+		m.statusMsg = errorStyle.Render(fmt.Sprintf("'%s': %s", msg.path, msg.err.Error()))
+		if msg.path != "/tmp" && msg.path != "/" {
+			m.remotePanel.Loading = true
+			m.remotePanel.Err = nil
+			m.statusMsg = loadingStyle.Render(fmt.Sprintf("'%s' not found, trying /tmp...", msg.path))
+			return m, m.fetchRemoteDir("/tmp")
+		}
 		return m, nil
 
 	case transferDoneMsg:
 		m.transfering = false
 		m.statusMsg = successStyle.Render(msg.msg)
-		// Refresh both panels
 		m.localPanel.LoadLocal()
 		return m, m.fetchRemoteDir(m.remotePanel.Path)
 
@@ -100,13 +163,149 @@ func (m ExplorerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMsg = errorStyle.Render("Transfer failed: " + msg.err.Error())
 		return m, nil
 
+	case doubleClickResetMsg:
+		// no-op, just for timing
+		return m, nil
+
 	case tea.KeyMsg:
 		if m.transfering {
-			return m, nil // block input during transfer
+			return m, nil
 		}
 		return m.handleKey(msg)
 	}
 
+	return m, nil
+}
+
+// handleMouse processes mouse events
+func (m ExplorerModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	x, y := msg.X, msg.Y
+
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		m.activeP().MoveUp()
+		m.activeP().MoveUp()
+		m.activeP().MoveUp()
+		return m, nil
+
+	case tea.MouseButtonWheelDown:
+		m.activeP().MoveDown()
+		m.activeP().MoveDown()
+		m.activeP().MoveDown()
+		return m, nil
+
+	case tea.MouseButtonLeft:
+		if msg.Action != tea.MouseActionPress {
+			return m, nil
+		}
+
+		// Check if click is on action buttons (bottom area)
+		if y >= m.actionBarY {
+			return m.handleButtonClick(x)
+		}
+
+		// Determine which panel was clicked
+		panelWidth := m.width / 2
+		clickedPanel := 0
+		if x >= panelWidth {
+			clickedPanel = 1
+		}
+
+		// Switch active panel
+		m.activePanel = clickedPanel
+		p := m.activeP()
+
+		// Calculate which entry was clicked
+		entryY := y - m.panelContentY
+		if entryY < 0 || entryY >= len(p.Entries) {
+			return m, nil
+		}
+
+		// Adjust for scroll offset
+		scrollStart := 0
+		contentHeight := p.Height - 4
+		if p.Cursor >= contentHeight {
+			scrollStart = p.Cursor - contentHeight + 1
+		}
+		clickedIdx := scrollStart + entryY
+
+		if clickedIdx >= len(p.Entries) {
+			return m, nil
+		}
+
+		// Double-click detection (within 400ms)
+		now := time.Now()
+		isDoubleClick := now.Sub(m.lastClickTime) < 400*time.Millisecond &&
+			m.lastClickY == y &&
+			m.lastClickPanel == clickedPanel
+
+		m.lastClickTime = now
+		m.lastClickY = y
+		m.lastClickPanel = clickedPanel
+
+		if isDoubleClick {
+			// Double click: enter directory or toggle select
+			p.Cursor = clickedIdx
+			if p.Entries[clickedIdx].IsDir {
+				return m.enterDir()
+			}
+			// Double-click on file: toggle select
+			p.ToggleSelect()
+			return m, nil
+		}
+
+		// Single click: move cursor
+		p.Cursor = clickedIdx
+		return m, nil
+
+	case tea.MouseButtonRight:
+		if msg.Action != tea.MouseActionPress {
+			return m, nil
+		}
+		// Right-click: toggle selection
+		panelWidth := m.width / 2
+		clickedPanel := 0
+		if x >= panelWidth {
+			clickedPanel = 1
+		}
+		m.activePanel = clickedPanel
+		p := m.activeP()
+
+		entryY := y - m.panelContentY
+		scrollStart := 0
+		contentHeight := p.Height - 4
+		if p.Cursor >= contentHeight {
+			scrollStart = p.Cursor - contentHeight + 1
+		}
+		clickedIdx := scrollStart + entryY
+		if clickedIdx >= 0 && clickedIdx < len(p.Entries) {
+			p.Cursor = clickedIdx
+			p.ToggleSelect()
+		}
+		return m, nil
+	}
+
+	return m, nil
+}
+
+// handleButtonClick handles clicks on the action bar buttons
+func (m ExplorerModel) handleButtonClick(x int) (tea.Model, tea.Cmd) {
+	for _, btn := range m.buttons {
+		if x >= btn.x1 && x < btn.x2 {
+			switch btn.id {
+			case btnUpload:
+				m.activePanel = 0 // select from local
+				return m.copyFilesFromPanel(0)
+			case btnDownload:
+				m.activePanel = 1 // select from remote
+				return m.copyFilesFromPanel(1)
+			case btnRefresh:
+				return m.refresh()
+			case btnQuit:
+				return m, tea.Quit
+			}
+		}
+	}
 	return m, nil
 }
 
@@ -129,6 +328,27 @@ func (m ExplorerModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.activeP().MoveDown()
 		return m, nil
 
+	case "pgup":
+		for i := 0; i < 10; i++ {
+			m.activeP().MoveUp()
+		}
+		return m, nil
+
+	case "pgdown":
+		for i := 0; i < 10; i++ {
+			m.activeP().MoveDown()
+		}
+		return m, nil
+
+	case "home":
+		m.activeP().Cursor = 0
+		return m, nil
+
+	case "end":
+		p := m.activeP()
+		p.Cursor = len(p.Entries) - 1
+		return m, nil
+
 	case "enter":
 		return m.enterDir()
 
@@ -138,13 +358,12 @@ func (m ExplorerModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "c":
-		return m.copyFiles()
+		return m.copyFilesFromPanel(m.activePanel)
 
 	case "r", "f5":
 		return m.refresh()
 
 	case "a":
-		// Toggle select all (except ..)
 		p := m.activeP()
 		if len(p.Selected) > 0 {
 			p.Selected = make(map[int]bool)
@@ -156,11 +375,7 @@ func (m ExplorerModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "?":
-		if m.statusMsg == "" {
-			m.statusMsg = "Tab:switch  Enter:open  Space:select  c:copy  a:all  r:refresh  q:quit"
-		} else {
-			m.statusMsg = ""
-		}
+		m.statusMsg = helpBarStyle.Render("Tab:switch | Arrows:move | Enter:open | Space/RightClick:select | c:copy | a:all | r:refresh | q:quit | Mouse:click/scroll/double-click")
 		return m, nil
 	}
 
@@ -185,6 +400,7 @@ func (m ExplorerModel) enterDir() (tea.Model, tea.Cmd) {
 		m.remotePanel.Path = newPath
 		m.remotePanel.Loading = true
 		m.remotePanel.Entries = nil
+		m.statusMsg = loadingStyle.Render(fmt.Sprintf("Loading %s...", newPath))
 		return m, m.fetchRemoteDir(newPath)
 	}
 
@@ -193,14 +409,20 @@ func (m ExplorerModel) enterDir() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m ExplorerModel) copyFiles() (tea.Model, tea.Cmd) {
-	entries := m.activeP().SelectedEntries()
+func (m ExplorerModel) copyFilesFromPanel(fromPanel int) (tea.Model, tea.Cmd) {
+	var srcPanel *Panel
+	if fromPanel == 0 {
+		srcPanel = &m.localPanel
+	} else {
+		srcPanel = &m.remotePanel
+	}
+
+	entries := srcPanel.SelectedEntries()
 	if len(entries) == 0 {
-		m.statusMsg = "No files selected. Use Space to select or position cursor on a file."
+		m.statusMsg = "No files selected. Click or Space to select files first."
 		return m, nil
 	}
 
-	// Skip directories for now
 	var files []FileEntry
 	for _, e := range entries {
 		if !e.IsDir {
@@ -214,25 +436,42 @@ func (m ExplorerModel) copyFiles() (tea.Model, tea.Cmd) {
 
 	m.transfering = true
 
-	if m.activePanel == 0 {
-		// Local -> Remote (Upload)
-		m.statusMsg = loadingStyle.Render(fmt.Sprintf("Uploading %d file(s)...", len(files)))
+	if fromPanel == 0 {
+		m.statusMsg = loadingStyle.Render(fmt.Sprintf("Uploading %d file(s) via S3...", len(files)))
 		return m, m.uploadFiles(files)
 	}
 
-	// Remote -> Local (Download)
-	m.statusMsg = loadingStyle.Render(fmt.Sprintf("Downloading %d file(s)...", len(files)))
+	m.statusMsg = loadingStyle.Render(fmt.Sprintf("Downloading %d file(s) via S3...", len(files)))
 	return m, m.downloadFiles(files)
 }
 
 func (m ExplorerModel) refresh() (tea.Model, tea.Cmd) {
 	m.localPanel.LoadLocal()
 	m.remotePanel.Loading = true
-	m.statusMsg = "Refreshing..."
+	m.statusMsg = loadingStyle.Render("Refreshing...")
 	return m, m.fetchRemoteDir(m.remotePanel.Path)
 }
 
 // Async commands
+
+func (m ExplorerModel) detectRemoteHome() tea.Cmd {
+	cfg := m.awsConfig
+	instId := m.instanceId
+	specifiedPath := m.remotePanel.Path
+	return func() tea.Msg {
+		if specifiedPath != "/home/ec2-user" {
+			return remoteHomeMsg{home: specifiedPath}
+		}
+		output, err := RunRemoteCommand(cfg, instId, "echo $HOME")
+		if err == nil {
+			home := strings.TrimSpace(output)
+			if home != "" && home != "$HOME" {
+				return remoteHomeMsg{home: home}
+			}
+		}
+		return remoteHomeMsg{home: specifiedPath}
+	}
+}
 
 func (m ExplorerModel) fetchRemoteDir(dirPath string) tea.Cmd {
 	cfg := m.awsConfig
@@ -240,7 +479,7 @@ func (m ExplorerModel) fetchRemoteDir(dirPath string) tea.Cmd {
 	return func() tea.Msg {
 		entries, err := ListRemoteDir(cfg, instId, dirPath)
 		if err != nil {
-			return remoteDirErrMsg{err}
+			return remoteDirErrMsg{err: err, path: dirPath}
 		}
 		return remoteDirMsg{entries: entries, path: dirPath}
 	}
@@ -302,11 +541,11 @@ func (m ExplorerModel) View() string {
 	// Status bar
 	status := m.statusMsg
 	if status == "" {
-		status = statusBarStyle.Render(fmt.Sprintf("Instance: %s | S3: %s", m.instanceId, m.s3Bucket))
+		status = statusBarStyle.Render(fmt.Sprintf("  Instance: %s | S3: %s", m.instanceId, m.s3Bucket))
 	}
 
-	// Help bar
-	help := helpBarStyle.Render("  Tab:switch | ↑↓:navigate | Enter:open | Space:select | c:copy | a:all | r:refresh | ?:help | q:quit")
+	// Action buttons bar
+	actionBar := m.renderActionBar()
 
 	// Compose
 	var b strings.Builder
@@ -314,7 +553,23 @@ func (m ExplorerModel) View() string {
 	b.WriteString("\n")
 	b.WriteString(status)
 	b.WriteString("\n")
-	b.WriteString(help)
+	b.WriteString(actionBar)
 
 	return b.String()
+}
+
+// renderActionBar renders clickable action buttons and updates their positions.
+func (m *ExplorerModel) renderActionBar() string {
+	var parts []string
+	x := 2
+
+	for i := range m.buttons {
+		rendered := m.buttons[i].style.Render(m.buttons[i].label)
+		m.buttons[i].x1 = x
+		m.buttons[i].x2 = x + lipgloss.Width(rendered)
+		x = m.buttons[i].x2 + 2 // gap between buttons
+		parts = append(parts, rendered)
+	}
+
+	return "  " + strings.Join(parts, "  ")
 }

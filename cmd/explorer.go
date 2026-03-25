@@ -65,7 +65,7 @@ Usage:
 
 			// 4. Launch TUI
 			model := tui.NewExplorerModel(*_credential.awsConfig, target.Name, localDir, remotePath, bucket)
-			p := tea.NewProgram(model, tea.WithAltScreen())
+			p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 			finalModel, err := p.Run()
 			if err != nil {

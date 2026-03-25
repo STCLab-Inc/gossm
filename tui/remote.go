@@ -63,10 +63,15 @@ func RunRemoteCommand(cfg aws.Config, instanceId, command string) (string, error
 
 // ListRemoteDir lists files in a remote directory via SSM.
 func ListRemoteDir(cfg aws.Config, instanceId, dirPath string) ([]FileEntry, error) {
-	cmd := fmt.Sprintf("ls -1pa %s 2>/dev/null", shellQuote(dirPath))
+	// Check if dir exists and list it in one command
+	cmd := fmt.Sprintf("test -d %s && ls -1pa %s || echo 'GOSSM_DIR_NOT_FOUND'", shellQuote(dirPath), shellQuote(dirPath))
 	output, err := RunRemoteCommand(cfg, instanceId, cmd)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cannot list %s: %w", dirPath, err)
+	}
+	output = strings.TrimSpace(output)
+	if output == "GOSSM_DIR_NOT_FOUND" {
+		return nil, fmt.Errorf("directory not found: %s", dirPath)
 	}
 	return parseRemoteListing(output), nil
 }
