@@ -30,22 +30,32 @@ func RunRemoteCommand(cfg aws.Config, instanceId, command string) (string, error
 
 	commandId := output.Command.CommandId
 
-	// Poll for result with initial delay
-	time.Sleep(800 * time.Millisecond)
+	// Progressive backoff polling: 300ms, 500ms, 700ms, 1s, 1s, 1s, ...
+	delays := []time.Duration{
+		300 * time.Millisecond,
+		500 * time.Millisecond,
+		700 * time.Millisecond,
+	}
+
 	for i := 0; i < 30; i++ {
+		// Pick delay: use progressive for first few, then 1s
+		delay := time.Second
+		if i < len(delays) {
+			delay = delays[i]
+		}
+		time.Sleep(delay)
+
 		inv, err := client.GetCommandInvocation(ctx, &ssm.GetCommandInvocationInput{
 			CommandId:  commandId,
 			InstanceId: aws.String(instanceId),
 		})
 		if err != nil {
-			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 
 		status := strings.ToLower(string(inv.Status))
 		switch status {
 		case "pending", "inprogress", "delayed":
-			time.Sleep(500 * time.Millisecond)
 			continue
 		case "success":
 			return aws.ToString(inv.StandardOutputContent), nil
@@ -58,7 +68,7 @@ func RunRemoteCommand(cfg aws.Config, instanceId, command string) (string, error
 		}
 	}
 
-	return "", fmt.Errorf("command timed out after 15s")
+	return "", fmt.Errorf("command timed out after 30s")
 }
 
 // ListRemoteDir lists files in a remote directory via SSM.
@@ -84,10 +94,15 @@ func TransferUpload(cfg aws.Config, instanceId, localPath, remotePath, bucket, s
 	s3URI := fmt.Sprintf("s3://%s/%s", bucket, s3Key)
 
 	// 1. Local -> S3
+	s3Tracker.Track(bucket, s3Key)
 	if out, err := exec.Command("aws", "s3", "cp", localPath, s3URI, "--quiet").CombinedOutput(); err != nil {
+		s3Tracker.Untrack(s3Key)
 		return fmt.Errorf("S3 upload failed: %s", string(out))
 	}
-	defer s3Delete(bucket, s3Key)
+	defer func() {
+		s3Delete(bucket, s3Key)
+		s3Tracker.Untrack(s3Key)
+	}()
 
 	// 2. S3 -> Remote
 	remoteCmd := fmt.Sprintf("aws s3 cp %s %s", s3URI, shellQuote(remotePath))
@@ -106,11 +121,16 @@ func TransferDownload(cfg aws.Config, instanceId, remotePath, localPath, bucket,
 	s3URI := fmt.Sprintf("s3://%s/%s", bucket, s3Key)
 
 	// 1. Remote -> S3
+	s3Tracker.Track(bucket, s3Key)
 	remoteCmd := fmt.Sprintf("aws s3 cp %s %s", shellQuote(remotePath), s3URI)
 	if _, err := RunRemoteCommand(cfg, instanceId, remoteCmd); err != nil {
+		s3Tracker.Untrack(s3Key)
 		return fmt.Errorf("remote upload to S3 failed: %w", err)
 	}
-	defer s3Delete(bucket, s3Key)
+	defer func() {
+		s3Delete(bucket, s3Key)
+		s3Tracker.Untrack(s3Key)
+	}()
 
 	// 2. S3 -> Local
 	if out, err := exec.Command("aws", "s3", "cp", s3URI, localPath, "--quiet").CombinedOutput(); err != nil {

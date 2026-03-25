@@ -110,20 +110,49 @@ func AskRegion(ctx context.Context, cfg aws.Config) (*Region, error) {
 }
 
 // AskTarget asks you which selects an instance.
+// Recent connections are shown at the top for quick access.
 func AskTarget(ctx context.Context, cfg aws.Config) (*Target, error) {
 	table, err := FindInstances(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	options := make([]string, 0, len(table))
-	for k, _ := range table {
-		options = append(options, k)
-	}
-	sort.Strings(options)
-	if len(options) == 0 {
+	if len(table) == 0 {
 		return nil, fmt.Errorf("not found ec2 instances")
 	}
+
+	// Build options with recent servers at the top
+	recentIds := GetRecentInstanceIds(cfg.Region)
+	var recentOptions, otherOptions []string
+	recentSet := make(map[string]bool)
+
+	// Find display keys for recent instances
+	for k, t := range table {
+		for _, rid := range recentIds {
+			if t.Name == rid {
+				recentOptions = append(recentOptions, k)
+				recentSet[k] = true
+				break
+			}
+		}
+	}
+
+	// Remaining options sorted
+	for k := range table {
+		if !recentSet[k] {
+			otherOptions = append(otherOptions, k)
+		}
+	}
+	sort.Strings(otherOptions)
+
+	// Compose: recent first (with marker), then all others
+	var options []string
+	for _, opt := range recentOptions {
+		options = append(options, "★ "+opt)
+		// Also keep mapping for starred version
+		table["★ "+opt] = table[opt]
+	}
+	options = append(options, otherOptions...)
 
 	prompt := &survey.Select{
 		Message: "Choose a target in AWS:",
@@ -137,7 +166,12 @@ func AskTarget(ctx context.Context, cfg aws.Config) (*Target, error) {
 		return nil, err
 	}
 
-	return table[selectKey], nil
+	target := table[selectKey]
+
+	// Save to history
+	SaveHistory(target.Name, selectKey, cfg.Region)
+
+	return target, nil
 }
 
 // AskMultiTarget asks you which selects multi targets.

@@ -64,6 +64,12 @@ Usage:
 				panicRed(err)
 			}
 
+			// Initialize signal handler for S3 cleanup on crash
+			tui.InitSignalHandler()
+
+			// Clean up stale temp files from previous runs (>24h old)
+			go tui.CleanupStaleS3Files(bucket, fmt.Sprintf("gossm-tmp/%s", target.Name))
+
 			model := tui.NewExplorerModel(*_credential.awsConfig, target.Name, localDir, remotePath, bucket)
 			p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 

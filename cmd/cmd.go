@@ -67,8 +67,8 @@ var (
 			}
 
 			fmt.Printf("%s\n", color.YellowString("Waiting Response ..."))
-			// wait 3 seconds
-			time.Sleep(time.Second * 3)
+			// Initial delay before polling (reduced from 3s)
+			time.Sleep(500 * time.Millisecond)
 
 			// show result
 			var inputs []*ssm.GetCommandInvocationInput

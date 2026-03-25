@@ -26,6 +26,12 @@ type remoteHomeMsg struct {
 
 type transferDoneMsg struct{ msg string }
 type transferErrMsg struct{ err error }
+type transferProgressMsg struct {
+	current  int
+	total    int
+	filename string
+	action   string // "Uploading" or "Downloading"
+}
 
 // doubleClickMsg is sent after a delay to reset double-click detection
 type doubleClickResetMsg struct{}
@@ -68,6 +74,9 @@ type ExplorerModel struct {
 	panelContentY int // Y offset where file entries start in panels
 	actionBarY    int // Y position of the action bar
 
+	// Remote directory cache
+	cache *dirCache
+
 	// AWS/SSM config
 	awsConfig  aws.Config
 	instanceId string
@@ -93,15 +102,16 @@ func NewExplorerModel(cfg aws.Config, instanceId, localDir, remoteDir, s3Bucket 
 	}
 
 	return ExplorerModel{
-		localPanel:  local,
-		remotePanel: remote,
-		activePanel: 0,
-		awsConfig:   cfg,
-		instanceId:  instanceId,
-		s3Bucket:    s3Bucket,
-		s3Prefix:    s3Prefix,
-		buttons:     buttons,
-		panelContentY: 2, // border(1) + title(1)
+		localPanel:    local,
+		remotePanel:   remote,
+		activePanel:   0,
+		awsConfig:     cfg,
+		instanceId:    instanceId,
+		s3Bucket:      s3Bucket,
+		s3Prefix:      s3Prefix,
+		buttons:       buttons,
+		panelContentY: 2,
+		cache:         newDirCache(60 * time.Second), // 60s TTL
 	}
 }
 
@@ -134,7 +144,8 @@ func (m ExplorerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.remotePanel.Path = msg.path
 		m.remotePanel.SetRemoteEntries(msg.entries)
 		m.statusMsg = successStyle.Render(fmt.Sprintf("Remote: %s (%d items)", msg.path, len(msg.entries)-1))
-		return m, nil
+		// Background prefetch subdirectories
+		return m, m.prefetchSubdirs()
 
 	case remoteHomeMsg:
 		m.remotePanel.Path = msg.home
@@ -143,7 +154,15 @@ func (m ExplorerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case remoteDirErrMsg:
 		m.remotePanel.Loading = false
 		m.remotePanel.Err = msg.err
-		m.statusMsg = errorStyle.Render(fmt.Sprintf("'%s': %s", msg.path, msg.err.Error()))
+		errStr := msg.err.Error()
+		// Detect session timeout/connectivity issues
+		if strings.Contains(errStr, "timed out") || strings.Contains(errStr, "expired") ||
+			strings.Contains(errStr, "TargetNotConnected") || strings.Contains(errStr, "InvalidInstanceId") {
+			m.statusMsg = errorStyle.Render("SSM connection lost. Press 'r' to retry.")
+			m.cache.InvalidateAll()
+			return m, nil
+		}
+		m.statusMsg = errorStyle.Render(fmt.Sprintf("'%s': %s", msg.path, errStr))
 		if msg.path != "/tmp" && msg.path != "/" {
 			m.remotePanel.Loading = true
 			m.remotePanel.Err = nil
@@ -152,15 +171,27 @@ func (m ExplorerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case transferNextMsg:
+		return m.processTransferNext(msg)
+
 	case transferDoneMsg:
 		m.transfering = false
 		m.statusMsg = successStyle.Render(msg.msg)
 		m.localPanel.LoadLocal()
+		m.cache.Invalidate(m.remotePanel.Path)
 		return m, m.fetchRemoteDir(m.remotePanel.Path)
+
+	case transferProgressMsg:
+		m.statusMsg = loadingStyle.Render(fmt.Sprintf("%s [%d/%d] %s", msg.action, msg.current, msg.total, msg.filename))
+		return m, nil
 
 	case transferErrMsg:
 		m.transfering = false
 		m.statusMsg = errorStyle.Render("Transfer failed: " + msg.err.Error())
+		return m, nil
+
+	case prefetchDoneMsg:
+		// Silent background prefetch completed, no UI update needed
 		return m, nil
 
 	case doubleClickResetMsg:
@@ -448,6 +479,7 @@ func (m ExplorerModel) copyFilesFromPanel(fromPanel int) (tea.Model, tea.Cmd) {
 func (m ExplorerModel) refresh() (tea.Model, tea.Cmd) {
 	m.localPanel.LoadLocal()
 	m.remotePanel.Loading = true
+	m.cache.InvalidateAll()
 	m.statusMsg = loadingStyle.Render("Refreshing...")
 	return m, m.fetchRemoteDir(m.remotePanel.Path)
 }
@@ -473,57 +505,147 @@ func (m ExplorerModel) detectRemoteHome() tea.Cmd {
 	}
 }
 
+// prefetchMsg is sent when background prefetch completes (silent, no UI update needed).
+type prefetchDoneMsg struct {
+	path    string
+	entries []FileEntry
+}
+
 func (m ExplorerModel) fetchRemoteDir(dirPath string) tea.Cmd {
 	cfg := m.awsConfig
 	instId := m.instanceId
+	cache := m.cache
+
+	// Check cache first
+	if cached := cache.Get(dirPath); cached != nil {
+		return func() tea.Msg {
+			return remoteDirMsg{entries: cached, path: dirPath}
+		}
+	}
+
 	return func() tea.Msg {
 		entries, err := ListRemoteDir(cfg, instId, dirPath)
 		if err != nil {
 			return remoteDirErrMsg{err: err, path: dirPath}
 		}
+		cache.Set(dirPath, entries)
 		return remoteDirMsg{entries: entries, path: dirPath}
 	}
 }
 
-func (m ExplorerModel) uploadFiles(files []FileEntry) tea.Cmd {
+// prefetchSubdirs fetches listings for visible subdirectories in the background.
+func (m ExplorerModel) prefetchSubdirs() tea.Cmd {
 	cfg := m.awsConfig
 	instId := m.instanceId
-	localBase := m.localPanel.Path
-	remotePath := m.remotePanel.Path
-	bucket := m.s3Bucket
-	prefix := m.s3Prefix
-	return func() tea.Msg {
-		var uploaded int
-		for _, f := range files {
-			localFile := localBase + "/" + f.Name
-			remoteFile := remotePath + "/" + f.Name
-			if err := TransferUpload(cfg, instId, localFile, remoteFile, bucket, prefix); err != nil {
-				return transferErrMsg{fmt.Errorf("%s: %w", f.Name, err)}
+	cache := m.cache
+	basePath := m.remotePanel.Path
+
+	// Collect subdirectories to prefetch
+	var dirs []string
+	for _, e := range m.remotePanel.Entries {
+		if e.IsDir && e.Name != ".." {
+			subPath := posixJoin(basePath, e.Name)
+			if cache.Get(subPath) == nil {
+				dirs = append(dirs, subPath)
 			}
-			uploaded++
 		}
-		return transferDoneMsg{fmt.Sprintf("Uploaded %d file(s) to %s", uploaded, remotePath)}
+	}
+
+	if len(dirs) == 0 {
+		return nil
+	}
+
+	// Limit prefetch to first 5 subdirs
+	if len(dirs) > 5 {
+		dirs = dirs[:5]
+	}
+
+	return func() tea.Msg {
+		for _, d := range dirs {
+			entries, err := ListRemoteDir(cfg, instId, d)
+			if err == nil {
+				cache.Set(d, entries)
+			}
+		}
+		return prefetchDoneMsg{}
+	}
+}
+
+// transferNextMsg drives sequential file transfer with progress updates.
+type transferNextMsg struct {
+	files      []FileEntry
+	current    int
+	action     string // "upload" or "download"
+	localBase  string
+	remotePath string
+	bucket     string
+	prefix     string
+}
+
+func (m ExplorerModel) uploadFiles(files []FileEntry) tea.Cmd {
+	return func() tea.Msg {
+		return transferNextMsg{
+			files: files, current: 0, action: "upload",
+			localBase: m.localPanel.Path, remotePath: m.remotePanel.Path,
+			bucket: m.s3Bucket, prefix: m.s3Prefix,
+		}
 	}
 }
 
 func (m ExplorerModel) downloadFiles(files []FileEntry) tea.Cmd {
+	return func() tea.Msg {
+		return transferNextMsg{
+			files: files, current: 0, action: "download",
+			localBase: m.localPanel.Path, remotePath: m.remotePanel.Path,
+			bucket: m.s3Bucket, prefix: m.s3Prefix,
+		}
+	}
+}
+
+// processTransferNext handles one file at a time, updating progress between each.
+func (m ExplorerModel) processTransferNext(msg transferNextMsg) (tea.Model, tea.Cmd) {
+	if msg.current >= len(msg.files) {
+		// All done
+		m.transfering = false
+		action := "Uploaded"
+		dest := msg.remotePath
+		if msg.action == "download" {
+			action = "Downloaded"
+			dest = msg.localBase
+		}
+		m.statusMsg = successStyle.Render(fmt.Sprintf("%s %d file(s) to %s", action, len(msg.files), dest))
+		m.localPanel.LoadLocal()
+		m.cache.Invalidate(m.remotePanel.Path)
+		return m, m.fetchRemoteDir(m.remotePanel.Path)
+	}
+
+	f := msg.files[msg.current]
+	actionLabel := "Uploading"
+	if msg.action == "download" {
+		actionLabel = "Downloading"
+	}
+	m.statusMsg = loadingStyle.Render(fmt.Sprintf("%s [%d/%d] %s", actionLabel, msg.current+1, len(msg.files), f.Name))
+
 	cfg := m.awsConfig
 	instId := m.instanceId
-	remotePath := m.remotePanel.Path
-	localBase := m.localPanel.Path
-	bucket := m.s3Bucket
-	prefix := m.s3Prefix
-	return func() tea.Msg {
-		var downloaded int
-		for _, f := range files {
-			remoteFile := path.Join(remotePath, f.Name)
-			localFile := localBase + "/" + f.Name
-			if err := TransferDownload(cfg, instId, remoteFile, localFile, bucket, prefix); err != nil {
-				return transferErrMsg{fmt.Errorf("%s: %w", f.Name, err)}
-			}
-			downloaded++
+	next := msg // copy
+	next.current++
+
+	return m, func() tea.Msg {
+		var err error
+		if msg.action == "upload" {
+			localFile := msg.localBase + "/" + f.Name
+			remoteFile := msg.remotePath + "/" + f.Name
+			err = TransferUpload(cfg, instId, localFile, remoteFile, msg.bucket, msg.prefix)
+		} else {
+			remoteFile := path.Join(msg.remotePath, f.Name)
+			localFile := msg.localBase + "/" + f.Name
+			err = TransferDownload(cfg, instId, remoteFile, localFile, msg.bucket, msg.prefix)
 		}
-		return transferDoneMsg{fmt.Sprintf("Downloaded %d file(s) to %s", downloaded, localBase)}
+		if err != nil {
+			return transferErrMsg{fmt.Errorf("%s: %w", f.Name, err)}
+		}
+		return next // trigger next file
 	}
 }
 
